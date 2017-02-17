@@ -133,6 +133,10 @@ static Avi_file_info g_avi_file_set[MAX_AVI_NUM];   // 从全局索引获取到的AVI文件
 
 static int g_curr_avi_num = 0;                      // 当前全局索引里面的有效AVI个数
 
+static int g_seek_seg_start_index = 0;
+
+static int g_seek_seg_stop_index  = 0;
+
 /*@breif BinareySearchEx 二分法查找递增表中最接近的数
  *@param [IN] data 欲查找的递增数组表
  *@param [IN] data_count 该数组的元素个数
@@ -362,18 +366,80 @@ int GetTimeSegmentArray(int start_time, int stop_time, int *seg_start_index, int
     return 0;
 }
 
+/*@breif GetAviFileList 从给定的时间段里面获取符合该时间段的avi文件列表
+ *@param [IN]  start_time 欲查找的开始时间戳
+ *@param [IN]  stop_time  欲查找的结束时间戳
+ *@param [OUT] file_list 获取到的文件指针数组
+ *@param [OUT] avi_count 获取到的AVI文件个数
+ *@return 成功返回0
+ *@       失败返回-1
+ *@note   每个AVI文件名长度不能超过32个字符
+ */
+int GetAviFileList(int start_time, int stop_time, void **file_list, int *avi_file_count)
+{
+    if (!file_list || *avi_file_count)
+    {
+       SD_ERR("NULL POINTER EXCEPTION!\n");
+       return -1;
+    }
+
+    if (stop_time < start_time)
+    {
+        SD_ERR("Seek time format error!\n");
+        return -1;
+    }
+
+    /* 搜索时间限定不能超过24H */
+    if (stop_time - start_time > 24*60*60)
+    {
+        SD_ERR("Find time segment too long! not more than 24h!\n");
+        return -1;
+    }
+
+    start_time = start_time<g_avi_file_set[0].start_time?g_avi_file_set[0].start_time:start_time;
+    stop_time  = stop_time>g_avi_file_set[g_curr_avi_num-1].stop_time?g_avi_file_set[g_curr_avi_num-1].stop_time:stop_time;
+
+    SD_DBG("Global index file avi time from %d to %d\n", g_avi_file_set[0].start_time, g_avi_file_set[g_curr_avi_num-1].stop_time);
+
+    int i = 0;
+    int j = 0;
+    int m = 0;
+    int n = 0;
+    int curr_avi_times[MAX_FOUND_AVI_NUM] = {0};
+
+    char **avi_file_list = (char **)file_list;
+
+    for (i=0; i<g_curr_avi_num; i++)
+    {
+        curr_avi_times[i] = g_avi_file_set[i].start_time;
+    }
+
+    m = BinareySearchEx(curr_avi_times, g_curr_avi_num, start_time);
+    n = BinareySearchEx(curr_avi_times, g_curr_avi_num, stop_time);
+
+    for (i=m, j=0; i<=n; i++, j++)
+    {
+        strcpy(avi_file_list[j], g_avi_file_set[i].file_name);
+    }
+    
+    *avi_file_count = j;
+    
+    return 0;
+}
+
 /*@breif SeekTimePointFromAviFileList 从给出的文件链表结构体里面获取对应的AVI文件进而获取对应的I帧帧号
  *@param [IN] seek_time 欲查找的开始时间戳
  *@param [IN] seg_start_index 符合操作的全局结构体g_avi_file_set数组的起始下标
  *@param [IN] seg_stop_index  符合操作的全局结构体g_avi_file_set数组的结束下标
+ *@param [OUT] get_avi_name   获取到的AVI文件
  *@param [OUT] get_iframe_num 获取到的I帧对应的视频帧的帧号
  *@return 成功返回0
  *@       失败返回-1
  *@note   需要先调用GetTimeSegmentArray获取对应的文件列表，然后从里面获取文件以及对应I帧帧号
  */
-int SeekTimePointFromAviFileList(int seek_time, int seg_start_index, int seg_stop_index, int *get_iframe_num)
+int SeekTimePointFromAviFileList(int seek_time, int seg_start_index, int seg_stop_index, char *get_avi_name, int *get_iframe_num)
 {
-    if (!get_iframe_num)
+    if (!get_iframe_num || !get_avi_name)
     {
        SD_ERR("NULL POINTER EXCEPTION!\n");
        return -1;
@@ -412,7 +478,7 @@ int SeekTimePointFromAviFileList(int seek_time, int seg_start_index, int seg_sto
     /* 二分法查找获取到最接近的文件名 */
     i = BinareySearchEx(avi_start_time_list, j, seek_time);
 
-    SD_DBG("found avi name is %s\n", g_avi_file_set[i+seg_start_index].file_name);
+    strncpy(get_avi_name, g_avi_file_set[i+seg_start_index].file_name, sizeof(g_avi_file_set[i+seg_start_index].file_name));
 
     /* 从当前AVI文件里面获取最接近的I帧帧号 */
     char avi_file[64] = {0};
@@ -445,13 +511,14 @@ int SeekTimePointFromAviFileList(int seek_time, int seg_start_index, int seg_sto
 
 /*@breif SeekTimePointFromGlobalIndexFile 从全局索引文件里面获取对应的AVI文件进而获取对应的I帧帧号
  *@param [IN] seek_time 欲查找的开始时间戳
+ *@param [OUT] get_avi_name 获取到的AVI文件
  *@param [OUT] get_iframe_num 获取到的I帧对应的视频帧的帧号
  *@return 成功返回0
  *@       失败返回-1
  */
-int SeekTimePointFromGlobalIndexFile(int seek_time, int *get_iframe_num)
+int SeekTimePointFromGlobalIndexFile(int seek_time, char *get_avi_name, int *get_iframe_num)
 {
-    if (!get_iframe_num)
+    if (!get_iframe_num || *get_avi_name)
     {
        SD_ERR("NULL POINTER EXCEPTION!\n");
        return -1;
@@ -479,6 +546,8 @@ int SeekTimePointFromGlobalIndexFile(int seek_time, int *get_iframe_num)
 
     i = BinareySearchEx(avi_file_list, g_curr_avi_num, seek_time);
 
+    strncpy(get_avi_name, g_avi_file_set[i].file_name, sizeof(g_avi_file_set[i].file_name));
+
     sprintf(avi_file, "%s/video/%s", SD_MOUNT_POINT, g_avi_file_set[i].file_name);
 
     ret = GetIFrameListFromAviFile(avi_file, iframe_list);
@@ -498,6 +567,16 @@ int SeekTimePointFromGlobalIndexFile(int seek_time, int *get_iframe_num)
     *get_iframe_num = iframe_list[i].IFrameNum;
 
     return 0;
+}
+
+void *PlaybackThread(void *lparam)
+{
+    while(1)
+    {
+        
+    }
+
+    return NULL;
 }
 
 int main(int argc, const char *argv[])
@@ -526,7 +605,9 @@ int main(int argc, const char *argv[])
     int ret = 0;
     int start_index = 0;
     int stop_index  = 0;
-    int get_iframe_num = 0;
+    int get_iframe_num = 0;    
+    char avi_file[32] = {0};
+    
     unsigned int spent_time_ms = 0;
 
     DECLARE_SHOT_CLOCK();
@@ -547,7 +628,7 @@ int main(int argc, const char *argv[])
         return -1;
     }
     
-    ret = SeekTimePointFromAviFileList(atoi(argv[3]), start_index, stop_index, &get_iframe_num);
+    ret = SeekTimePointFromAviFileList(atoi(argv[3]), start_index, stop_index, avi_file, &get_iframe_num);
     if (ret)
     {
         SD_ERR("Fail to called SeekTimePointFromAviFileList\n");
@@ -555,11 +636,11 @@ int main(int argc, const char *argv[])
     }
     STOP_SPEND_SHOT_CLOCK(spent_time_ms);
 
+    SD_INF("Found avi file is %s\n", avi_file);
+
     SD_INF("Found iframe num is %d\n", get_iframe_num);
 
     SD_INF("Found info spent %d ms\n", spent_time_ms/1000);
-
-    
 
     START_SHOT_CLOCK();
     
@@ -570,19 +651,47 @@ int main(int argc, const char *argv[])
         return -1;
     }
     
-    ret = SeekTimePointFromGlobalIndexFile(atoi(argv[3]), &get_iframe_num);
+    avi_file[0] = '\0';
+    ret = SeekTimePointFromGlobalIndexFile(atoi(argv[3]), avi_file, &get_iframe_num);
     if (ret)
     {
         SD_ERR("Fail to called SeekTimePointFromGlobalIndexFile\n");
         return -1;
     }
+    
     STOP_SPEND_SHOT_CLOCK(spent_time_ms);
+
+    SD_INF("Found avi file is %s\n", avi_file);
     
     SD_INF("Found iframe num from global file is %d\n", get_iframe_num);
 
     SD_INF("Found info from global file spent %d ms\n", spent_time_ms/1000);
 
+    char *file_list[MAX_FOUND_AVI_NUM] = {0};
+    int i = 0;
+    int avi_count = 0;
 
+    for(i=0; i<MAX_FOUND_AVI_NUM; i++)
+    {
+        file_list[i] = (char *)malloc(32*sizeof(char));
+    }
+    
+    ret = GetAviFileList(atoi(argv[1]), atoi(argv[2]), (void**)file_list, &avi_count);
+    if (ret)
+    {
+        SD_ERR("Fail to called GetAviFileList\n");
+        return -1;
+    }
+
+    for (i=0; i<avi_count; i++)
+    {
+        SD_INF("found NO.%d avi is %s\n", i, file_list[i]);
+    }
+
+    for (i=0; i<MAX_FOUND_AVI_NUM; i++)
+    {
+        free(file_list[i]);
+    }
 
     return 0;
 }
