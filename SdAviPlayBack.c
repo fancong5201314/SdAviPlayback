@@ -18,6 +18,8 @@
 #include <sys/ioctl.h>
 #include <semaphore.h>
 
+#include "aviapi.h"
+
 #define SD_ERR(format, args...) do{printf("\033[1;31m[SD][%s-%d]\033[m" format, __FILE__, __LINE__, ##args);}while(0)
 #define SD_DBG(format, args...) do{printf("\033[1;32m[SD][%s-%d]\033[m" format, __FILE__, __LINE__, ##args);}while(0)
 #define SD_INF(format, args...) do{printf("\033[1;35m[SD][%s-%d]\033[m" format, __FILE__, __LINE__, ##args);}while(0)
@@ -132,10 +134,10 @@ static global_head_t g_global_head;                 // 全局索引头(64Bytes)
 static Avi_file_info g_avi_file_set[MAX_AVI_NUM];   // 从全局索引获取到的AVI文件信息集合(625KBytes)
 
 static int g_curr_avi_num = 0;                      // 当前全局索引里面的有效AVI个数
+static int g_curr_avi_index = 0;                    // 当前操作的AVI的g_avi_file_set下标
 
-static int g_seek_seg_start_index = 0;
-
-static int g_seek_seg_stop_index  = 0;
+static int g_seek_seg_start_index = 0;              // 当前seek片段的g_avi_file_set的起始下标
+static int g_seek_seg_stop_index  = 0;              // 当前seek片段的g_avi_file_set的结束下标
 
 /*@breif BinareySearchEx 二分法查找递增表中最接近的数
  *@param [IN] data 欲查找的递增数组表
@@ -426,11 +428,13 @@ int SeekTimePointFromAviFileList(int seek_time, char *get_avi_name, int *get_ifr
     /* 二分法查找获取到最接近的文件名 */
     i = BinareySearchEx(avi_start_time_list, j, seek_time);
 
-    strncpy(get_avi_name, g_avi_file_set[i+g_seek_seg_start_index].file_name, sizeof(g_avi_file_set[i+g_seek_seg_start_index].file_name));
+    g_curr_avi_index = i + g_seek_seg_start_index;
+    
+    strncpy(get_avi_name, g_avi_file_set[g_curr_avi_index].file_name, sizeof(g_avi_file_set[g_curr_avi_index].file_name));
 
     /* 从当前AVI文件里面获取最接近的I帧帧号 */
     char avi_file[64] = {0};
-    sprintf(avi_file, "%s/video/%s", SD_MOUNT_POINT, g_avi_file_set[i+g_seek_seg_start_index].file_name);
+    sprintf(avi_file, "%s/video/%s", SD_MOUNT_POINT, g_avi_file_set[g_curr_avi_index].file_name);
 
     ret = GetIFrameListFromAviFile(avi_file, iframe_list);
     if (ret)
@@ -517,11 +521,71 @@ int SeekTimePointFromGlobalIndexFile(int seek_time, char *get_avi_name, int *get
     return 0;
 }
 
+int g_curr_seek_iframe_num = 0;
+
+sem_t g_sem_start_playback;
+
 void *PlaybackThread(void *lparam)
 {
+    int i = 0;
+    int ret = 0;
+    int keyframe = 0;
+    int framesize = 0;
+    int frametype = 0; // 当前帧的类型 0:视频帧  1:音频帧
+
+    char ops_avi_file[64] = {0};
+    char FrameData[512*1024] = {0};
+        
     while(1)
     {
+        sem_wait(&g_sem_start_playback);
+
+        int y=0,mon=0,d=0,h=0,min=0,s=0;
+        unsigned int curr_sec = 0;
+        unsigned char out_video_file[64] = {0};
+        unsigned char out_audio_file[64] = {0};
         
+        curr_sec = time((time_t*)NULL);
+        ULONG_TO_TIME(curr_sec, y, mon, d, h, min, s);
+        
+        sprintf(out_video_file, "%s/%04d%02d%02d%02d%02d%02d.264", SD_MOUNT_POINT, y, mon, d, h, min, s);
+        sprintf(out_audio_file, "%s/%04d%02d%02d%02d%02d%02d.pcm", SD_MOUNT_POINT, y, mon, d, h, min, s);
+        
+        FILE *video_fp = fopen(out_video_file, "w+");
+        FILE *audio_fp = fopen(out_audio_file, "w+");
+
+        for (i=g_curr_avi_index; i<=g_seek_seg_stop_index; i++)
+        {
+            sprintf(ops_avi_file, "%s/video/%s", SD_MOUNT_POINT, g_avi_file_set[i].file_name);
+            InitAviActionMode(ops_avi_file, 1);
+            SetAviIndexPosition(g_curr_seek_iframe_num);
+            for (;;)
+            {
+                ret = ReadAviFrame(FrameData, &framesize, &frametype, &keyframe);
+                if (ret == 0)
+                {
+                    if (frametype)
+                    {
+                        fwrite(FrameData, framesize, 1, video_fp);
+                    }
+                    else
+                    {
+
+                        fwrite(FrameData, framesize, 1, audio_fp);
+                    }
+                }
+                else if (1 == ret)
+                {
+                    SD_DBG("Read %s Over!\n", g_avi_file_set[i].file_name);
+                    StopAviAction(1);
+                    g_curr_seek_iframe_num = 0;
+                    break;
+                }
+            }
+        }
+        fclose(video_fp);
+        fclose(audio_fp);
+        SD_DBG("All avi file read over!\n");
     }
 
     return NULL;
@@ -552,10 +616,15 @@ int main(int argc, const char *argv[])
 
     int ret = 0;
     int get_iframe_num = 0;    
+    pthread_t paly_back_id = -1;
     
     unsigned int spent_time_ms = 0;
 
     DECLARE_SHOT_CLOCK();
+    
+    sem_init(&g_sem_start_playback, 0, 0);
+
+    pthread_create(&paly_back_id, NULL, PlaybackThread, NULL);
 
     START_SHOT_CLOCK();
 
@@ -582,7 +651,7 @@ int main(int argc, const char *argv[])
         SD_ERR("Fail to called GetTimeSegmentArray\n");
         return -1;
     }
-    
+
 //  for (i=0; i<avi_count; i++)
     {
 //      SD_INF("found NO.%d avi is %s\n", i, file_list[i]);
@@ -599,6 +668,7 @@ int main(int argc, const char *argv[])
         SD_ERR("Fail to called SeekTimePointFromAviFileList\n");
         return -1;
     }
+    
     STOP_SPEND_SHOT_CLOCK(spent_time_ms);
 
     SD_INF("Found avi file is %s\n", avi_file);
@@ -606,6 +676,19 @@ int main(int argc, const char *argv[])
     SD_INF("Found iframe num is %d\n", get_iframe_num);
 
     SD_INF("Found info spent %d ms\n", spent_time_ms/1000);
+
+    g_curr_seek_iframe_num = get_iframe_num;
+
+    sem_post(&g_sem_start_playback);
+    
+    SD_INF("Playbacking ......\n");
+    
+    while(1)
+    {
+        sleep(10);
+    }
+
+#if 0
 
     START_SHOT_CLOCK();
     
@@ -631,6 +714,8 @@ int main(int argc, const char *argv[])
     SD_INF("Found iframe num from global file is %d\n", get_iframe_num);
 
     SD_INF("Found info from global file spent %d ms\n", spent_time_ms/1000);
+
+#endif
 
     return 0;
 }
