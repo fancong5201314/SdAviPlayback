@@ -145,8 +145,8 @@ inline int BinareySearchEx(int *data, int data_count, int key)
 {
     if(!data  || data_count < 1)
     {
-        printf("%s %d error !\n", __func__, __LINE__);
-        return -1;      
+        SD_ERR("NULL POINTER EXCEPTION!\n");
+        return -1;
     }
 
     if(data_count == 1)
@@ -156,12 +156,12 @@ inline int BinareySearchEx(int *data, int data_count, int key)
 
     if(key <= data[0])   
     {  
-        printf("key = %d, data[0] = %d\n", key, data[0]);            
+        SD_DBG("warnning: key = %d, data[0] = %d\n", key, data[0]);            
         return 0;  
     }     
     else if(key >= data[data_count-1])    
     {       
-        printf("key = %d, data[%d] = %d\n", key, data_count -1, data[data_count-1]); 
+        SD_DBG("warnning: key = %d, data[%d] = %d\n", key, data_count -1, data[data_count-1]); 
         return data_count-1;    
     }  
 
@@ -190,21 +190,24 @@ inline int BinareySearchEx(int *data, int data_count, int key)
     return start-data-1; /* 返回不超过的最大下标 */
 }
 
-int cmp_avi_start_time(const void *a, const void *b)
+static int cmp_avi_start_time(const void *a, const void *b)
 {
     Avi_file_info *aa = (Avi_file_info *)a;
     Avi_file_info *bb = (Avi_file_info *)b;
     return ((aa->start_time)>(bb->start_time)?1:-1);
 }
 
-int com_avi_i_frame_time(const void *a, const void *b)
+static int com_avi_i_frame_time(const void *a, const void *b)
 {
     IFrameInfo *aa = (IFrameInfo *)a;
     IFrameInfo *bb = (IFrameInfo *)b;
     return ((aa->CurIFrameTime)>(bb->CurIFrameTime)?1:-1);
 }
 
-/* 从全局文件里面获取信息头和AVI信息放在全局结构体里面 */
+/*@breif GetGlobalHeadInfoFromGlobalFile 从全局文件里面获取信息头和AVI信息放在全局结构体里面
+ *@return 成功返回0
+ *@       失败返回-1
+ */
 int GetGlobalHeadInfoFromGlobalFile(void)
 {
     char global_file[64] = {0};
@@ -261,7 +264,12 @@ int GetGlobalHeadInfoFromGlobalFile(void)
     return 0;
 }
 
-/* 从avi文件里面获取I帧信息表放在句柄里面 */
+/*@breif GetIFrameListFromAviFile 从avi文件里面获取I帧信息表放在句柄里面
+ *@param [IN]  avi_file 欲操作的AVI文件
+ *@param [OUT] i_frame_handle 从avi_file里面获取到的I帧信息句柄
+ *@return 成功返回0
+ *@       失败返回-1
+ */
 int GetIFrameListFromAviFile(const char *avi_file, void *i_frame_handle)
 {
     if (!avi_file || !i_frame_handle)
@@ -305,13 +313,27 @@ int GetIFrameListFromAviFile(const char *avi_file, void *i_frame_handle)
     return 0;    
 }
 
-/* 从给定的时间段里面获取符合该时间段的avi文件下标 */
+/*@breif GetTimeSegmentArray 从给定的时间段里面获取符合该时间段的avi文件下标
+ *@param [IN]  start_time 欲查找的开始时间戳
+ *@param [IN]  stop_time  欲查找的结束时间戳
+ *@param [OUT] seg_start_index 获取到的全局结构体g_avi_file_set数组的起始下标
+ *@param [OUT] seg_stop_index  获取到的全局结构体g_avi_file_set数组的结束下标
+ *@return 成功返回0
+ *@       失败返回-1
+ *@note   查询的时间段不能超过一天即24小时
+ */
 int GetTimeSegmentArray(int start_time, int stop_time, int *seg_start_index, int *seg_stop_index)
 {
     if (!seg_start_index || !seg_stop_index)
     {
        SD_ERR("NULL POINTER EXCEPTION!\n");
        return -1;
+    }
+
+    if (stop_time < start_time)
+    {
+        SD_ERR("Seek time format error!\n");
+        return -1;
     }
 
     /* 搜索时间限定不能超过24H */
@@ -323,6 +345,8 @@ int GetTimeSegmentArray(int start_time, int stop_time, int *seg_start_index, int
 
     start_time = start_time<g_avi_file_set[0].start_time?g_avi_file_set[0].start_time:start_time;
     stop_time  = stop_time>g_avi_file_set[g_curr_avi_num-1].stop_time?g_avi_file_set[g_curr_avi_num-1].stop_time:stop_time;
+
+    SD_DBG("Global index file avi time from %d to %d\n", g_avi_file_set[0].start_time, g_avi_file_set[g_curr_avi_num-1].stop_time);
 
     int i = 0;
     int curr_avi_times[MAX_FOUND_AVI_NUM] = {0};
@@ -338,7 +362,15 @@ int GetTimeSegmentArray(int start_time, int stop_time, int *seg_start_index, int
     return 0;
 }
 
-/* 从给出的文件链表结构体里面获取对应的AVI文件进而获取对应的I帧帧号 */
+/*@breif SeekTimePointFromAviFileList 从给出的文件链表结构体里面获取对应的AVI文件进而获取对应的I帧帧号
+ *@param [IN] seek_time 欲查找的开始时间戳
+ *@param [IN] seg_start_index 符合操作的全局结构体g_avi_file_set数组的起始下标
+ *@param [IN] seg_stop_index  符合操作的全局结构体g_avi_file_set数组的结束下标
+ *@param [OUT] get_iframe_num 获取到的I帧对应的视频帧的帧号
+ *@return 成功返回0
+ *@       失败返回-1
+ *@note   需要先调用GetTimeSegmentArray获取对应的文件列表，然后从里面获取文件以及对应I帧帧号
+ */
 int SeekTimePointFromAviFileList(int seek_time, int seg_start_index, int seg_stop_index, int *get_iframe_num)
 {
     if (!get_iframe_num)
@@ -347,9 +379,24 @@ int SeekTimePointFromAviFileList(int seek_time, int seg_start_index, int seg_sto
        return -1;
     }
 
+    /* 定位的开始下标不能超过结束下标 */
     if (seg_start_index > seg_stop_index)
     {
         SD_ERR("Segment index [%d > %d] fail!\n", seg_start_index, seg_stop_index);
+        return -1;
+    }
+
+    /* 定位的结束下标不能数据越界 */
+    if (seg_stop_index > g_curr_avi_num)
+    {
+        SD_ERR("Segment stop index %d out of rang %d!\n", seg_stop_index, g_curr_avi_num);
+        return -1;
+    }
+
+    /* 判断定位的区域是否有录像 */
+    if (seek_time < g_avi_file_set[seg_start_index].start_time || seek_time > g_avi_file_set[seg_stop_index].stop_time)
+    {
+        SD_ERR("seek time %d is out of [%d, %d]\n", seek_time, g_avi_file_set[seg_start_index].start_time, g_avi_file_set[seg_stop_index].stop_time);
         return -1;
     }
 
@@ -396,6 +443,63 @@ int SeekTimePointFromAviFileList(int seek_time, int seg_start_index, int seg_sto
     return 0;
 }
 
+/*@breif SeekTimePointFromGlobalIndexFile 从全局索引文件里面获取对应的AVI文件进而获取对应的I帧帧号
+ *@param [IN] seek_time 欲查找的开始时间戳
+ *@param [OUT] get_iframe_num 获取到的I帧对应的视频帧的帧号
+ *@return 成功返回0
+ *@       失败返回-1
+ */
+int SeekTimePointFromGlobalIndexFile(int seek_time, int *get_iframe_num)
+{
+    if (!get_iframe_num)
+    {
+       SD_ERR("NULL POINTER EXCEPTION!\n");
+       return -1;
+    }
+
+    /* 判断定位的区域是否有录像 */
+    if (seek_time < g_avi_file_set[0].start_time || seek_time > g_avi_file_set[g_curr_avi_num-1].stop_time)
+    {
+        SD_ERR("seek time %d is out of [%d, %d]\n", seek_time, g_avi_file_set[0].start_time, g_avi_file_set[g_curr_avi_num-1].stop_time);
+        return -1;
+    }
+
+    /* 在全局AVI信息结构体里面寻找最接近该定位点的AVI文件，获取其AVI文件名 */
+    int i = 0;
+    int ret = 0;
+    int avi_file_list[MAX_AVI_NUM] = {0};
+    int iframe_num_list[MAX_I_FRAME_NUM] = {0};
+    char avi_file[64] = {0};
+    IFrameInfo iframe_list[MAX_I_FRAME_NUM];
+
+    for (i=0; i<g_curr_avi_num; i++)
+    {
+        avi_file_list[i] = g_avi_file_set[i].start_time;
+    }
+
+    i = BinareySearchEx(avi_file_list, g_curr_avi_num, seek_time);
+
+    sprintf(avi_file, "%s/video/%s", SD_MOUNT_POINT, g_avi_file_set[i].file_name);
+
+    ret = GetIFrameListFromAviFile(avi_file, iframe_list);
+    if (ret)
+    {
+        SD_ERR("Fail to called GetIFrameListFromAviFile\n");
+        return -1;
+    }
+
+    for (i=0; i<MAX_I_FRAME_NUM; i++)
+    {
+        iframe_num_list[i] = iframe_list[i].CurIFrameTime;
+    }
+
+    i = BinareySearchEx(iframe_num_list, MAX_I_FRAME_NUM, seek_time);
+
+    *get_iframe_num = iframe_list[i].IFrameNum;
+
+    return 0;
+}
+
 int main(int argc, const char *argv[])
 {
     if (argc != 4)
@@ -420,8 +524,8 @@ int main(int argc, const char *argv[])
     SD_INF("seek_time:  %s ---> %04d-%02d-%02d %02d:%02d:%02d\n", argv[3], y, m, d, h, min, s);
 
     int ret = 0;
-    int start_time = 0;
-    int stop_time  = 0;
+    int start_index = 0;
+    int stop_index  = 0;
     int get_iframe_num = 0;
     unsigned int spent_time_ms = 0;
 
@@ -436,14 +540,14 @@ int main(int argc, const char *argv[])
         return -1;
     }
 
-    ret = GetTimeSegmentArray(atoi(argv[1]), atoi(argv[2]), &start_time, &stop_time);
+    ret = GetTimeSegmentArray(atoi(argv[1]), atoi(argv[2]), &start_index, &stop_index);
     if (ret)
     {
         SD_ERR("Fail to called GetTimeSegmentArray\n");
         return -1;
     }
     
-    ret = SeekTimePointFromAviFileList(atoi(argv[3]), start_time, stop_time, &get_iframe_num);
+    ret = SeekTimePointFromAviFileList(atoi(argv[3]), start_index, stop_index, &get_iframe_num);
     if (ret)
     {
         SD_ERR("Fail to called SeekTimePointFromAviFileList\n");
@@ -454,6 +558,31 @@ int main(int argc, const char *argv[])
     SD_INF("Found iframe num is %d\n", get_iframe_num);
 
     SD_INF("Found info spent %d ms\n", spent_time_ms/1000);
+
+    
+
+    START_SHOT_CLOCK();
+    
+    ret = GetGlobalHeadInfoFromGlobalFile();
+    if (ret)
+    {
+        SD_ERR("Fail to called GetGlobalHeadInfoFromGlobalFile\n");
+        return -1;
+    }
+    
+    ret = SeekTimePointFromGlobalIndexFile(atoi(argv[3]), &get_iframe_num);
+    if (ret)
+    {
+        SD_ERR("Fail to called SeekTimePointFromGlobalIndexFile\n");
+        return -1;
+    }
+    STOP_SPEND_SHOT_CLOCK(spent_time_ms);
+    
+    SD_INF("Found iframe num from global file is %d\n", get_iframe_num);
+
+    SD_INF("Found info from global file spent %d ms\n", spent_time_ms/1000);
+
+
 
     return 0;
 }
